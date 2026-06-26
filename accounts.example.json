@@ -1,0 +1,22 @@
+{
+  "accounts": [
+    {
+      "name": "account-1",
+      "token_file": "tokens/token-account-1.json",
+      "calendar_id": "primary",
+      "authuser": "0"
+    },
+    {
+      "name": "account-2",
+      "token_file": "tokens/token-account-2.json",
+      "calendar_id": "primary",
+      "authuser": "1"
+    },
+    {
+      "name": "account-3",
+      "token_file": "tokens/token-account-3.json",
+      "calendar_id": "primary",
+      "authuser": "2"
+    }
+  ]
+}
