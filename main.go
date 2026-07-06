@@ -34,6 +34,7 @@ type account struct {
 	AuthUser   string `json:"authuser"`
 	CalendarID string `json:"calendar_id"`
 	Name       string `json:"name"`
+	Priority   int    `json:"priority"`
 	TokenFile  string `json:"token_file"`
 }
 
@@ -54,6 +55,7 @@ type eventEntry struct {
 	DedupeKey     string
 	End           time.Time
 	Link          string
+	Priority      int
 	Start         time.Time
 	StartText     string
 	Summary       string
@@ -227,8 +229,11 @@ func dedupeEntries(entries []eventEntry) []eventEntry {
 		if key == "" {
 			key = fmt.Sprintf("%s|%s", e.Summary, e.Start.UTC().Format(time.RFC3339))
 		}
-		_, ok := seen[key]
+		existing, ok := seen[key]
 		if ok {
+			if e.Priority < existing.Priority {
+				seen[key] = e
+			}
 			continue
 		}
 		seen[key] = e
@@ -727,6 +732,7 @@ func toEntry(item *calendar.Event, acct account, calendarEmail string) (eventEnt
 		DedupeKey:     fmt.Sprintf("%s|%s", summary, start.UTC().Format(time.RFC3339)),
 		End:           end.UTC(),
 		Link:          link,
+		Priority:      acct.Priority,
 		Start:         start.UTC(),
 		StartText:     startText,
 		Summary:       summary,

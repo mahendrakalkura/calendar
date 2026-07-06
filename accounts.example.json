@@ -1,22 +1,25 @@
 {
   "accounts": [
     {
+      "authuser": "0",
+      "calendar_id": "primary",
       "name": "account-1",
-      "token_file": "tokens/token-account-1.json",
-      "calendar_id": "primary",
-      "authuser": "0"
+      "priority": 0,
+      "token_file": "tokens/token-account-1.json"
     },
     {
+      "authuser": "1",
+      "calendar_id": "primary",
       "name": "account-2",
-      "token_file": "tokens/token-account-2.json",
-      "calendar_id": "primary",
-      "authuser": "1"
+      "priority": 1,
+      "token_file": "tokens/token-account-2.json"
     },
     {
-      "name": "account-3",
-      "token_file": "tokens/token-account-3.json",
+      "authuser": "2",
       "calendar_id": "primary",
-      "authuser": "2"
+      "name": "account-3",
+      "priority": 2,
+      "token_file": "tokens/token-account-3.json"
     }
   ]
 }

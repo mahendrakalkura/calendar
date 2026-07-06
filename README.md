@@ -28,25 +28,28 @@ Copy `accounts.example.json` to `accounts.json` and list one entry per calendar:
 {
   "accounts": [
     {
-      "name": "account-1",
-      "token_file": "tokens/token-account-1.json",
+      "authuser": "0",
       "calendar_id": "primary",
-      "authuser": "0"
+      "name": "account-1",
+      "priority": 0,
+      "token_file": "tokens/token-account-1.json"
     },
     {
-      "name": "account-2",
-      "token_file": "tokens/token-account-2.json",
+      "authuser": "1",
       "calendar_id": "primary",
-      "authuser": "1"
+      "name": "account-2",
+      "priority": 1,
+      "token_file": "tokens/token-account-2.json"
     }
   ]
 }
 ```
 
-- `name` - label for logs and re-auth prompts.
-- `token_file` - where this account's OAuth token is stored (created on first run).
-- `calendar_id` - `primary`, or a specific calendar address.
 - `authuser` - optional. The Google account index used to rewrite `meet.google.com` links so they open under the right session in a multi-account browser. Omit it if you do not need this.
+- `calendar_id` - `primary`, or a specific calendar address.
+- `name` - label for logs and re-auth prompts.
+- `priority` - optional (default 0). When the same event appears on multiple calendars, the account with the lower `priority` number wins the dedup and its name appears in the ACCOUNT column.
+- `token_file` - where this account's OAuth token is stored (created on first run).
 
 ### 3. Authorize
 
