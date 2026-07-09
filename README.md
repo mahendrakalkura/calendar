@@ -48,7 +48,7 @@ Copy `accounts.example.json` to `accounts.json` and list one entry per calendar:
 - `authuser` - optional. The Google account index used to rewrite `meet.google.com` links so they open under the right session in a multi-account browser. Omit it if you do not need this.
 - `calendar_id` - `primary`, or a specific calendar address.
 - `name` - label for logs and re-auth prompts.
-- `priority` - optional (default 0). When the same event appears on multiple calendars, the account with the lower `priority` number wins the dedup and its name appears in the ACCOUNT column.
+- `priority` - optional (default 0). When the same event appears on multiple calendars, the account with the higher `priority` number wins the dedup and its name appears in the ACCOUNT column.
 - `token_file` - where this account's OAuth token is stored (created on first run).
 
 ### 3. Authorize

@@ -231,7 +231,7 @@ func dedupeEntries(entries []eventEntry) []eventEntry {
 		}
 		existing, ok := seen[key]
 		if ok {
-			if e.Priority < existing.Priority {
+			if e.Priority > existing.Priority {
 				seen[key] = e
 			}
 			continue
@@ -392,7 +392,12 @@ func getTokenFromWeb(config *oauth2.Config, label string) (*oauth2.Token, error)
 	if err != nil {
 		return nil, err
 	}
-	defer listener.Close()
+	defer func() {
+		e := listener.Close()
+		if e != nil && !errors.Is(e, net.ErrClosed) {
+			log.Printf("listener close: %v", e)
+		}
+	}()
 
 	localConfig := *config
 	localConfig.RedirectURL = fmt.Sprintf("http://%s/oauth2callback", listener.Addr().String())
@@ -436,7 +441,10 @@ func getTokenFromWeb(config *oauth2.Config, label string) (*oauth2.Token, error)
 			return
 		}
 
-		fmt.Fprintln(w, "Authorization received. You can close this browser tab and return to the terminal.")
+		_, e := fmt.Fprintln(w, "Authorization received. You can close this browser tab and return to the terminal.")
+		if e != nil {
+			log.Printf("callback response write: %v", e)
+		}
 		select {
 		case codeCh <- code:
 		default:
