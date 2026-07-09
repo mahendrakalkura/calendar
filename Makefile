@@ -11,7 +11,7 @@ lint:
 	golangci-lint run ./...
 
 run:
-	./main $(if $(TZ),--tz=$(TZARG)) $(FORCE)
+	./main $(if $(TZ),--tz=$(TZ)) $(FORCE)
 
 %:
 	@:
