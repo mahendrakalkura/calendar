@@ -11,6 +11,8 @@ lint:
 	golangci-lint run ./...
 
 run:
+	clear
+	reset
 	./main $(if $(TZ),--tz=$(TZ)) $(FORCE)
 
 %:
