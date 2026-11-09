@@ -35,6 +35,11 @@ import (
 	"google.golang.org/api/option"
 )
 
+type abbreviation struct {
+	keyword string
+	label   string
+}
+
 type account struct {
 	AuthUser   string `json:"authuser"`
 	CalendarID string `json:"calendar_id"`
@@ -143,6 +148,12 @@ const (
 var authMu sync.Mutex
 
 var (
+	abbreviations = []abbreviation{
+		{keyword: "fulcrumsaas", label: "FS"},
+		{keyword: "gmail", label: "MK"},
+		{keyword: "infoscience", label: "NR"},
+		{keyword: "yellowstone", label: "RL"},
+	}
 	headers      = []string{"ACCOUNT", "EVENT", "FROM", "TO", "DURATION", "LINK"}
 	styleAccount = styleCell.Foreground(lipgloss.Color(colorAccount))
 	styleCell    = lipgloss.NewStyle().Padding(0, cellPadding)
@@ -651,6 +662,21 @@ func openBrowser(url string) error {
 	return cmd.Start()
 }
 
+// accountLabel is the short ACCOUNT cell for a calendar address, or the "@" and the text after it when no abbreviation matches.
+func accountLabel(calendarEmail string) string {
+	lower := strings.ToLower(calendarEmail)
+	for _, item := range abbreviations {
+		if strings.Contains(lower, item.keyword) {
+			return item.label
+		}
+	}
+	at := strings.Index(calendarEmail, "@")
+	if at >= 0 {
+		return calendarEmail[at:]
+	}
+	return calendarEmail
+}
+
 // clampOffset keeps the first visible row no lower than the first row from which every remaining row still fits.
 func (screen *screenModel) clampOffset() {
 	rows := screen.displayRows()
@@ -692,14 +718,7 @@ func (screen screenModel) displayRows() []displayRow {
 
 		summary, from, to, duration := formatRow(e, screen.loc)
 
-		// Show only the "@" and the text after it in the ACCOUNT column
-		label := e.CalendarEmail
-		at := strings.Index(label, "@")
-		if at >= 0 {
-			label = label[at:]
-		}
-
-		cells := []string{label, summary, from, to, duration, e.Link}
+		cells := []string{accountLabel(e.CalendarEmail), summary, from, to, duration, e.Link}
 		rows = append(rows, displayRow{cells: cells, kind: kind})
 	}
 	return rows
@@ -716,6 +735,9 @@ func (screen screenModel) fitRows(rows []displayRow) []displayRow {
 		widths[column] = lipgloss.Width(header)
 	}
 	for _, row := range rows {
+		if row.kind == rowDate {
+			continue
+		}
 		for column, cell := range row.cells {
 			widths[column] = max(widths[column], lipgloss.Width(cell))
 		}
@@ -764,10 +786,10 @@ func (screen screenModel) filtered() []eventEntry {
 	return matches
 }
 
-// matchesQuery reports whether every term of the query starts a word of the event summary, account, or calendar.
+// matchesQuery reports whether every term of the query starts a word of the event summary, account, calendar, or account label.
 func matchesQuery(e eventEntry, query string) bool {
 	terms := words(query)
-	candidates := words(fmt.Sprintf("%s %s %s", e.Summary, e.Account, e.CalendarEmail))
+	candidates := words(fmt.Sprintf("%s %s %s %s", e.Summary, e.Account, e.CalendarEmail, accountLabel(e.CalendarEmail)))
 	for _, term := range terms {
 		found := slices.ContainsFunc(candidates, func(candidate string) bool {
 			return strings.HasPrefix(candidate, term)
@@ -903,6 +925,9 @@ func (screen screenModel) View() string {
 	rows = screen.fitRows(rows)
 	padded := slices.Clone(headers)
 	for _, row := range rows {
+		if row.kind == rowDate {
+			continue
+		}
 		for column, cell := range row.cells {
 			width := max(lipgloss.Width(padded[column]), lipgloss.Width(cell))
 			padded[column] = fmt.Sprintf("%-*s", width, padded[column])
@@ -916,6 +941,11 @@ func (screen screenModel) View() string {
 	visible := rows[screen.offset:end]
 	cells := make([][]string, 0, len(visible))
 	for _, row := range visible {
+		// A date is drawn as a heading below, so its table cells stay empty and add nothing to the column widths
+		if row.kind == rowDate {
+			cells = append(cells, make([]string, tableColumns))
+			continue
+		}
 		cells = append(cells, row.cells)
 	}
 	view := table.New().

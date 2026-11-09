@@ -70,6 +70,6 @@ make run PST        # different timezone abbreviation
 make run IST force  # refetch, bypass cache
 ```
 
-- Type in the filter at the top to search every event. Each typed word must start a word of the event title, the account, or the calendar address, ignoring case and punctuation.
+- Type in the filter at the top to search every event. Each typed word must start a word of the event title, the account, the calendar address, or the account label, ignoring case and punctuation.
 - Up and Down scroll the table, and Esc quits.
 - A refresh reads the cache and refetches from Google only when the cache is older than 60 minutes. A rejected token during a refresh shows in the status line; restart the program to re-authorize.
