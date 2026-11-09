@@ -122,21 +122,24 @@ const (
 	colorDim        = "8"
 	colorNext       = "9"
 	columnAccount   = 0
+	columnCountdown = 5
 	columnDuration  = 4
 	columnEvent     = 1
 	columnFrom      = 2
-	columnLink      = 5
+	columnLink      = 6
 	columnTo        = 3
 	ellipsis        = "..."
 	filterLines     = 2
 	futureDays      = 30
+	hoursPerDay     = 24
 	minColumnWidth  = 10
+	minutesPerHour  = 60
 	refreshInterval = time.Minute
 	renderFPS       = 10
 	reservedLines   = 4
 	requestTimeout  = 30 * time.Second
-	tableBorders    = 7
-	tableColumns    = 6
+	tableBorders    = 8
+	tableColumns    = 7
 )
 
 const (
@@ -154,7 +157,7 @@ var (
 		{keyword: "infoscience", label: "Nagi Reddy"},
 		{keyword: "yellowstone", label: "Richard Larson"},
 	}
-	headers      = []string{"ACCOUNT", "EVENT", "FROM", "TO", "DURATION", "LINK"}
+	headers      = []string{"Client", "Event", "From", "To", "Duration", "Countdown", "Link"}
 	styleAccount = styleCell.Foreground(lipgloss.Color(colorAccount))
 	styleCell    = lipgloss.NewStyle().Padding(0, cellPadding)
 	styleDate    = styleCell.Foreground(lipgloss.Color(colorDate)).Bold(true)
@@ -662,7 +665,7 @@ func openBrowser(url string) error {
 	return cmd.Start()
 }
 
-// accountLabel is the short ACCOUNT cell for a calendar address, or the "@" and the text after it when no abbreviation matches.
+// accountLabel is the short Client cell for a calendar address, or the "@" and the text after it when no abbreviation matches.
 func accountLabel(calendarEmail string) string {
 	lower := strings.ToLower(calendarEmail)
 	for _, item := range abbreviations {
@@ -692,6 +695,27 @@ func (screen *screenModel) clampOffset() {
 	screen.offset = max(0, min(screen.offset, last))
 }
 
+// countdownText is the time from now to the event start as zero-padded "XXd YYh ZZm", floored to whole minutes, and empty once the event has started.
+func countdownText(e eventEntry, loc *time.Location, now time.Time) string {
+	start := e.Start
+	if e.AllDay {
+		// An all-day start is UTC midnight of its date, so rebuild that date in the display zone
+		utc := e.Start.UTC()
+		start = time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, loc)
+	}
+
+	// An event that is already going on has no countdown
+	if !start.After(now) {
+		return ""
+	}
+
+	totalMinutes := int(start.Sub(now).Minutes())
+	days := totalMinutes / (hoursPerDay * minutesPerHour)
+	hours := totalMinutes / minutesPerHour % hoursPerDay
+	minutes := totalMinutes % minutesPerHour
+	return fmt.Sprintf("%02dd %02dh %02dm", days, hours, minutes)
+}
+
 // displayRows builds the table rows for the events that have not ended and match the filter, with a date row before each new day.
 func (screen screenModel) displayRows() []displayRow {
 	rows := []displayRow{}
@@ -705,7 +729,7 @@ func (screen screenModel) displayRows() []displayRow {
 		dateKey := tzTime.Format("2006-01-02")
 		if dateKey != lastDate {
 			date := fmt.Sprintf("%s %s", dateKey, tzTime.Format("Mon"))
-			rows = append(rows, displayRow{cells: []string{date, "", "", "", "", ""}, kind: rowDate})
+			rows = append(rows, displayRow{cells: []string{date, "", "", "", "", "", ""}, kind: rowDate})
 		}
 		lastDate = dateKey
 
@@ -718,7 +742,8 @@ func (screen screenModel) displayRows() []displayRow {
 
 		summary, from, to, duration := formatRow(e, screen.loc)
 
-		cells := []string{accountLabel(e.CalendarEmail), summary, from, to, duration, e.Link}
+		countdown := countdownText(e, screen.loc, screen.now)
+		cells := []string{accountLabel(e.CalendarEmail), summary, from, to, duration, countdown, e.Link}
 		rows = append(rows, displayRow{cells: cells, kind: kind})
 	}
 	return rows
@@ -744,7 +769,7 @@ func (screen screenModel) fitRows(rows []displayRow) []displayRow {
 	}
 
 	room := screen.width - tableBorders - tableColumns*2*cellPadding
-	room -= widths[columnAccount] + widths[columnFrom] + widths[columnTo] + widths[columnDuration]
+	room -= widths[columnAccount] + widths[columnFrom] + widths[columnTo] + widths[columnDuration] + widths[columnCountdown]
 	if widths[columnEvent]+widths[columnLink] <= room {
 		return rows
 	}
@@ -829,9 +854,9 @@ func runTUI(events []eventEntry, loc *time.Location, refresh func() ([]eventEntr
 	return err
 }
 
-// isRightAligned reports whether a column holds times or a duration.
+// isRightAligned reports whether a column holds times, a duration, or a countdown.
 func isRightAligned(column int) bool {
-	return column >= columnFrom && column <= columnDuration
+	return column >= columnFrom && column <= columnCountdown
 }
 
 func tick() tea.Cmd {
