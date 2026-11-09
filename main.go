@@ -93,16 +93,17 @@ type savingTokenSource struct {
 }
 
 type screenModel struct {
-	events  []eventEntry
-	failure string
-	filter  textinput.Model
-	height  int
-	loading bool
-	loc     *time.Location
-	now     time.Time
-	offset  int
-	refresh func() ([]eventEntry, error)
-	width   int
+	events      []eventEntry
+	failure     string
+	filter      textinput.Model
+	height      int
+	lastRefresh time.Time
+	loading     bool
+	loc         *time.Location
+	now         time.Time
+	offset      int
+	refresh     func() ([]eventEntry, error)
+	width       int
 }
 
 type tickMessage time.Time
@@ -130,6 +131,8 @@ const (
 	columnTo        = 3
 	ellipsis        = "..."
 	filterLines     = 2
+	// forceInterval is the fixed delay between background force refreshes.
+	forceInterval   = 5 * time.Minute
 	futureDays      = 30
 	hoursPerDay     = 24
 	minColumnWidth  = 10
@@ -227,7 +230,7 @@ func main() {
 	}
 
 	refresh := func() ([]eventEntry, error) {
-		return load(authFail, false)
+		return load(authFail, true)
 	}
 	err = runTUI(events, loc, refresh)
 	if err != nil {
@@ -842,7 +845,7 @@ func matchesQuery(e eventEntry, query string) bool {
 	return true
 }
 
-// refreshCommand loads the events in the background, so the screen keeps handling keys while the cache or Google is read.
+// refreshCommand fetches events in the background so the screen keeps handling keys.
 func (screen screenModel) refreshCommand() tea.Cmd {
 	refresh := screen.refresh
 	return func() tea.Msg {
@@ -852,7 +855,7 @@ func (screen screenModel) refreshCommand() tea.Cmd {
 	}
 }
 
-// runTUI shows the events in a full-screen table, refreshed every minute from the cache or Google.
+// runTUI shows the events in a full-screen table, updates the clock every minute, and bypasses the cache to fetch from Google every five minutes.
 func runTUI(events []eventEntry, loc *time.Location, refresh func() ([]eventEntry, error)) error {
 	filter := textinput.New()
 	filter.Placeholder = "type to filter: words starting with the event, account, or calendar"
@@ -860,11 +863,12 @@ func runTUI(events []eventEntry, loc *time.Location, refresh func() ([]eventEntr
 	filter.Focus()
 
 	screen := screenModel{
-		events:  events,
-		filter:  filter,
-		loc:     loc,
-		now:     time.Now(),
-		refresh: refresh,
+		events:      events,
+		filter:      filter,
+		lastRefresh: time.Now(),
+		loc:         loc,
+		now:         time.Now(),
+		refresh:     refresh,
 	}
 	_, err := tea.NewProgram(screen, tea.WithAltScreen(), tea.WithFPS(renderFPS)).Run()
 	return err
@@ -916,10 +920,11 @@ func (screen screenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMessage:
 		screen.now = time.Time(message)
 		screen.clampOffset()
-		// Skip starting a refresh while the previous one is still running
-		if screen.loading {
+		// Refresh starts after the previous one finishes and the force interval passes
+		if screen.loading || time.Since(screen.lastRefresh) < forceInterval {
 			return screen, tick()
 		}
+		screen.lastRefresh = time.Now()
 		screen.loading = true
 		return screen, tea.Batch(tick(), screen.refreshCommand())
 	case refreshMessage:

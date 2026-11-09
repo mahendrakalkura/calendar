@@ -1,6 +1,6 @@
 # calendar
 
-A TUI that shows calendar events across multiple Google accounts in a single merged table. It shows today and the next 30 days, as many as the screen holds, scrolling for the rest, deduplicates events that appear on more than one calendar, highlights the next upcoming event, and keeps events of earlier days out. Today's events that have ended stay in grey. The table refreshes every minute.
+A TUI that shows calendar events across multiple Google accounts in a single merged table. It shows today and the next 30 days, as many as the screen holds, scrolling for the rest, deduplicates events that appear on more than one calendar, highlights the next upcoming event, and keeps events of earlier days out. Today's events that have ended stay in grey. The table refreshes every minute. A background refresh fetches from Google every 5 minutes.
 
 ## Setup
 
@@ -61,6 +61,7 @@ Results are cached in `events.json` with a 60-minute TTL, keyed by `calendar_id|
 
 - `make run` uses the cache when fresh.
 - `make run force` bypasses the cache and refetches.
+- A background force refresh rewrites `events.json` every 5 minutes.
 
 ## Usage
 
@@ -72,4 +73,6 @@ make run IST force  # refetch, bypass cache
 
 - Type in the filter at the top to search every event. Each typed word must start a word of the event title, the account, the calendar address, or the account label, ignoring case and punctuation.
 - Up and Down scroll the table, and Esc quits.
-- A refresh reads the cache and refetches from Google only when the cache is older than 60 minutes. A rejected token during a refresh shows in the status line; restart the program to re-authorize.
+- The screen clock updates every minute.
+- A background force refresh fetches from Google every 5 minutes.
+- A rejected token during a refresh shows in the status line; restart the program to re-authorize.
