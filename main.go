@@ -587,8 +587,14 @@ func printTable(entries []eventEntry, loc *time.Location, tzAbbr string) {
 			wrap = func(s string) string { return text.Colors{text.Bold}.Sprint(s) }
 		}
 
+		// Show only the "@" and the text after it in the ACCOUNT column
+		label := e.CalendarEmail
+		if at := strings.Index(label, "@"); at >= 0 {
+			label = label[at:]
+		}
+
 		t.AppendRow(table.Row{
-			wrap(e.CalendarEmail),
+			wrap(label),
 			wrap(summary),
 			wrap(from),
 			wrap(to),
