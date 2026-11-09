@@ -124,6 +124,7 @@ const (
 	columnTo        = 3
 	ellipsis        = "..."
 	filterLines     = 2
+	futureDays      = 30
 	minColumnWidth  = 10
 	refreshInterval = time.Minute
 	reservedLines   = 4
@@ -314,8 +315,8 @@ func fetchOrCached(ctx context.Context, oauthCfg *oauth2.Config, acct account, r
 func eventRange(loc *time.Location) (time.Time, time.Time) {
 	now := time.Now().In(loc)
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-	rangeStart := startOfDay.AddDate(0, 0, -3)
-	rangeEnd := startOfDay.AddDate(0, 0, 8)
+	rangeStart := startOfDay
+	rangeEnd := startOfDay.AddDate(0, 0, futureDays)
 	return rangeStart, rangeEnd
 }
 
@@ -940,22 +941,34 @@ func (screen screenModel) View() string {
 			return style
 		})
 
-	// Draw one dividing line where a new date starts, and none between the events of one date.
+	// Draw a date as a heading that spans the table width, with a dividing line closing the columns above it and another reopening them below it.
 	lines := strings.Split(view.Render(), "\n")
+	border := lipgloss.NormalBorder()
 	divider := lines[2]
+	closing := strings.ReplaceAll(divider, border.Middle, border.MiddleBottom)
+	opening := strings.ReplaceAll(divider, border.Middle, border.MiddleTop)
+	inner := lipgloss.Width(lines[0]) - 2
+	side := styleDim.Render(border.Left)
 	rendered := []string{lines[0], lines[1], divider}
 	for index, line := range lines[3 : 3+len(visible)] {
-		if index > 0 && visible[index].kind == rowDate {
-			rendered = append(rendered, divider)
+		if visible[index].kind != rowDate {
+			rendered = append(rendered, line)
+			continue
 		}
-		rendered = append(rendered, line)
+		if index == 0 {
+			rendered[2] = closing
+		} else {
+			rendered = append(rendered, closing)
+		}
+		heading := styleDate.Width(inner).Render(visible[index].cells[0])
+		rendered = append(rendered, fmt.Sprintf("%s%s%s", side, heading, side), opening)
 	}
 	rendered = append(rendered, lines[len(lines)-1])
 	builder.WriteString(strings.Join(rendered, "\n"))
 	return builder.String()
 }
 
-// visibleRows is how many rows fit, counting a dividing line for every date that starts inside the window.
+// visibleRows is how many rows fit, counting the dividing lines around every date heading, and never ending on a heading with no event under it.
 func (screen screenModel) visibleRows(rows []displayRow) int {
 	if screen.height <= 0 {
 		return len(rows)
@@ -965,14 +978,20 @@ func (screen screenModel) visibleRows(rows []displayRow) int {
 	count := 0
 	for index := screen.offset; index < len(rows); index++ {
 		cost := 1
-		if index > screen.offset && rows[index].kind == rowDate {
+		if rows[index].kind == rowDate {
 			cost++
+			if index > screen.offset {
+				cost++
+			}
 		}
 		if cost > budget {
 			break
 		}
 		budget -= cost
 		count++
+	}
+	if count > 1 && rows[screen.offset+count-1].kind == rowDate {
+		count--
 	}
 	return max(1, count)
 }

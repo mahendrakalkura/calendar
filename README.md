@@ -1,6 +1,6 @@
 # calendar
 
-A TUI that shows calendar events across multiple Google accounts in a single merged table. It shows a window around today (3 days back through 8 days ahead), deduplicates events that appear on more than one calendar, highlights the next upcoming event, and removes events once they have ended. The table refreshes every minute.
+A TUI that shows calendar events across multiple Google accounts in a single merged table. It shows today and the next 30 days, as many as the screen holds, scrolling for the rest, deduplicates events that appear on more than one calendar, highlights the next upcoming event, and removes events once they have ended. The table refreshes every minute.
 
 ## Setup
 
