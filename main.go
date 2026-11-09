@@ -127,6 +127,7 @@ const (
 	futureDays      = 30
 	minColumnWidth  = 10
 	refreshInterval = time.Minute
+	renderFPS       = 10
 	reservedLines   = 4
 	requestTimeout  = 30 * time.Second
 	tableBorders    = 7
@@ -802,7 +803,7 @@ func runTUI(events []eventEntry, loc *time.Location, refresh func() ([]eventEntr
 		now:     time.Now(),
 		refresh: refresh,
 	}
-	_, err := tea.NewProgram(screen, tea.WithAltScreen()).Run()
+	_, err := tea.NewProgram(screen, tea.WithAltScreen(), tea.WithFPS(renderFPS)).Run()
 	return err
 }
 
