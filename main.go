@@ -146,6 +146,7 @@ const (
 	rowDate rowKind = iota
 	rowEvent
 	rowNext
+	rowPast
 )
 
 var authMu sync.Mutex
@@ -164,6 +165,7 @@ var (
 	styleDim     = lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
 	styleHeader  = styleCell.Bold(true)
 	styleNext    = styleCell.Foreground(lipgloss.Color(colorNext)).Bold(true)
+	stylePast    = styleCell.Foreground(lipgloss.Color(colorDim))
 )
 
 var meetingLinkRegex = regexp.MustCompile(`https?://(?:meet\.google\.com|[\w.-]*zoom\.us|teams\.microsoft\.com|teams\.live\.com|[\w.-]*webex\.com|meet\.jit\.si|whereby\.com|[\w.-]*\.gotomeeting\.com|[\w.-]*\.bluejeans\.com)/[^\s<>"')]+`)
@@ -733,9 +735,12 @@ func (screen screenModel) displayRows() []displayRow {
 		}
 		lastDate = dateKey
 
-		// Highlight the first event that is still to be shown
+		// Grey out finished events of today, and highlight the first event that has not ended
 		kind := rowEvent
-		if !nextFound {
+		switch {
+		case eventEnded(e, screen.loc, screen.now):
+			kind = rowPast
+		case !nextFound:
 			kind = rowNext
 			nextFound = true
 		}
@@ -787,6 +792,17 @@ func (screen screenModel) fitRows(rows []displayRow) []displayRow {
 	return fitted
 }
 
+// eventBeforeToday reports whether an event ended on an earlier day than today in the display zone.
+func eventBeforeToday(e eventEntry, loc *time.Location, now time.Time) bool {
+	local := now.In(loc)
+	if e.AllDay {
+		// All-day ends are UTC midnight of the next day, so compare dates
+		return e.End.UTC().Format("2006-01-02") <= local.Format("2006-01-02")
+	}
+	startOfDay := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	return e.End.In(loc).Before(startOfDay)
+}
+
 // eventEnded reports whether an event has ended by now; an all-day event has ended once its last day is over.
 func eventEnded(e eventEntry, loc *time.Location, now time.Time) bool {
 	if e.AllDay {
@@ -796,12 +812,12 @@ func eventEnded(e eventEntry, loc *time.Location, now time.Time) bool {
 	return e.End.In(loc).Before(now)
 }
 
-// filtered returns the events that have not ended and match the typed filter, in table order.
+// filtered returns the events that end today or later and match the typed filter, in table order.
 func (screen screenModel) filtered() []eventEntry {
 	query := screen.filter.Value()
 	matches := []eventEntry{}
 	for _, e := range screen.events {
-		if eventEnded(e, screen.loc, screen.now) {
+		if eventBeforeToday(e, screen.loc, screen.now) {
 			continue
 		}
 		if matchesQuery(e, query) {
@@ -988,6 +1004,8 @@ func (screen screenModel) View() string {
 				style = styleDate
 			case visible[row].kind == rowNext:
 				style = styleNext
+			case visible[row].kind == rowPast:
+				style = stylePast
 			case column == columnAccount:
 				style = styleAccount
 			}
