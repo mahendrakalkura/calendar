@@ -560,6 +560,16 @@ func printTable(entries []eventEntry, loc *time.Location, tzAbbr string) {
 	t.AppendHeader(table.Row{"ACCOUNT", "EVENT", "FROM", "TO", "DURATION", "LINK"})
 	lastDate := ""
 	for i, e := range entries {
+		// Skip events that have already ended, including their date header
+		ended := e.End.In(loc).Before(now)
+		if e.AllDay {
+			// All-day ends are UTC midnight of the next day, so compare dates
+			ended = e.End.UTC().Format("2006-01-02") <= now.Format("2006-01-02")
+		}
+		if ended {
+			continue
+		}
+
 		tzTime := e.Start.In(loc)
 		if e.AllDay {
 			tzTime = e.Start.UTC()
@@ -577,12 +587,9 @@ func printTable(entries []eventEntry, loc *time.Location, tzAbbr string) {
 
 		summary, from, to, dur := formatRow(e, loc)
 
-		past := e.End.In(loc).Before(now)
 		var wrap func(string) string
 		if i == nextIdx {
 			wrap = func(s string) string { return text.Colors{text.FgHiRed, text.Bold}.Sprint(s) }
-		} else if past {
-			wrap = func(s string) string { return text.Colors{text.FgHiBlack}.Sprint(s) }
 		} else {
 			wrap = func(s string) string { return text.Colors{text.Bold}.Sprint(s) }
 		}
