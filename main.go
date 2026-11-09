@@ -149,10 +149,10 @@ var authMu sync.Mutex
 
 var (
 	abbreviations = []abbreviation{
-		{keyword: "fulcrumsaas", label: "FS"},
-		{keyword: "gmail", label: "MK"},
-		{keyword: "infoscience", label: "NR"},
-		{keyword: "yellowstone", label: "RL"},
+		{keyword: "fulcrumsaas", label: "John Golinvaux"},
+		{keyword: "gmail", label: "Mahendra Kalkura"},
+		{keyword: "infoscience", label: "Nagi Reddy"},
+		{keyword: "yellowstone", label: "Richard Larson"},
 	}
 	headers      = []string{"ACCOUNT", "EVENT", "FROM", "TO", "DURATION", "LINK"}
 	styleAccount = styleCell.Foreground(lipgloss.Color(colorAccount))
