@@ -697,7 +697,7 @@ func (screen *screenModel) clampOffset() {
 	screen.offset = max(0, min(screen.offset, last))
 }
 
-// countdownText is the time from now to the event start as zero-padded "XXd YYh ZZm", floored to whole minutes, and empty once the event has started.
+// countdownText is the time from now to the event start as space-padded "XXd YYh ZZm", floored to whole minutes, and empty once the event has started.
 func countdownText(e eventEntry, loc *time.Location, now time.Time) string {
 	start := e.Start
 	if e.AllDay {
@@ -715,7 +715,7 @@ func countdownText(e eventEntry, loc *time.Location, now time.Time) string {
 	days := totalMinutes / (hoursPerDay * minutesPerHour)
 	hours := totalMinutes / minutesPerHour % hoursPerDay
 	minutes := totalMinutes % minutesPerHour
-	return fmt.Sprintf("%02dd %02dh %02dm", days, hours, minutes)
+	return fmt.Sprintf("%2dd %2dh %2dm", days, hours, minutes)
 }
 
 // displayRows builds the table rows for the events that have not ended and match the filter, with a date row before each new day.
