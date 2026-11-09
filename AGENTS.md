@@ -4,7 +4,7 @@ Guidance for AI coding agents working in this repository.
 
 ## What this is
 
-A single-binary Go CLI (`main.go`) that fetches calendar events across several Google accounts for a window around today (-3 to +8 days) and prints them as one merged, deduplicated table. Results are cached on disk.
+A single-binary Go TUI (`main.go`, Bubble Tea) that fetches calendar events across several Google accounts for a window around today (-3 to +8 days) and shows them as one merged, deduplicated table. The table refreshes every minute, drops events that have ended, and has a filter at the top that searches every event. Results are cached on disk.
 
 ## Build, run, lint
 

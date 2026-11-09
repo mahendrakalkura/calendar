@@ -16,13 +16,17 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
-	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/jedib0t/go-pretty/v6/text"
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/calendar/v3"
@@ -42,9 +46,16 @@ type accountsConfig struct {
 	Accounts []account `json:"accounts"`
 }
 
+type authPolicy int
+
 type cacheEntry struct {
 	Entries   []eventEntry `json:"entries"`
 	FetchedAt time.Time    `json:"fetched_at"`
+}
+
+type displayRow struct {
+	cells []string
+	kind  rowKind
 }
 
 type eventEntry struct {
@@ -61,6 +72,13 @@ type eventEntry struct {
 	Summary       string
 }
 
+type refreshMessage struct {
+	err    error
+	events []eventEntry
+}
+
+type rowKind int
+
 type savingTokenSource struct {
 	current *oauth2.Token
 	mu      sync.Mutex
@@ -68,10 +86,52 @@ type savingTokenSource struct {
 	source  oauth2.TokenSource
 }
 
+type screenModel struct {
+	events  []eventEntry
+	filter  textinput.Model
+	height  int
+	loading bool
+	loc     *time.Location
+	now     time.Time
+	offset  int
+	refresh func() ([]eventEntry, error)
+	status  string
+}
+
+type tickMessage time.Time
+
+const (
+	authFail authPolicy = iota
+	authPrompt
+)
+
 const cachePath = "events.json"
 const cacheTTL = 60 * time.Minute
 
+const (
+	chromeLines     = 7
+	columnDuration  = 4
+	columnFrom      = 2
+	refreshInterval = time.Minute
+	requestTimeout  = 30 * time.Second
+)
+
+const (
+	rowDate rowKind = iota
+	rowEvent
+	rowNext
+)
+
 var authMu sync.Mutex
+
+var (
+	headers     = []string{"ACCOUNT", "EVENT", "FROM", "TO", "DURATION", "LINK"}
+	styleDate   = lipgloss.NewStyle().Bold(true)
+	styleDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	styleEvent  = lipgloss.NewStyle().Bold(true)
+	styleHeader = lipgloss.NewStyle().Bold(true)
+	styleNext   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9"))
+)
 
 var meetingLinkRegex = regexp.MustCompile(`https?://(?:meet\.google\.com|[\w.-]*zoom\.us|teams\.microsoft\.com|teams\.live\.com|[\w.-]*webex\.com|meet\.jit\.si|whereby\.com|[\w.-]*\.gotomeeting\.com|[\w.-]*\.bluejeans\.com)/[^\s<>"')]+`)
 
@@ -109,8 +169,6 @@ func main() {
 		log.Fatalf("parse credentials.json: %v", err)
 	}
 
-	rangeStart, rangeEnd := eventRange(loc)
-
 	for _, acct := range cfg.Accounts {
 		if strings.TrimSpace(acct.Name) == "" {
 			log.Fatal("account name cannot be empty")
@@ -125,47 +183,27 @@ func main() {
 
 	cache := loadCache()
 
-	results := make([][]eventEntry, len(cfg.Accounts))
-	errs := make([]error, len(cfg.Accounts))
-	var wg sync.WaitGroup
-	for i, acct := range cfg.Accounts {
-		wg.Add(1)
-		go func(i int, acct account) {
-			defer wg.Done()
-			results[i], errs[i] = fetchOrCached(ctx, oauthCfg, acct, rangeStart, rangeEnd, loc, *force, cache)
-		}(i, acct)
+	load := func(policy authPolicy, force bool) ([]eventEntry, error) {
+		return loadEvents(ctx, oauthCfg, cfg.Accounts, cache, loc, policy, force)
 	}
-	wg.Wait()
-
-	var all []eventEntry
-	for i, acct := range cfg.Accounts {
-		if errs[i] != nil {
-			log.Fatalf("fetch (%s): %v", acct.Name, errs[i])
-		}
-		all = append(all, results[i]...)
+	events, err := load(authPrompt, *force)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	saveCache(cache)
-
-	all = dedupeEntries(all)
-	sort.Slice(all, func(i, j int) bool {
-		if all[i].Start.Equal(all[j].Start) {
-			return all[i].Summary < all[j].Summary
-		}
-		return all[i].Start.Before(all[j].Start)
-	})
-
-	if len(all) == 0 {
-		fmt.Println("No events found.")
-		return
+	refresh := func() ([]eventEntry, error) {
+		return load(authFail, false)
 	}
-
-	printTable(all, loc, *tzAbbr)
+	err = runTUI(events, loc, refresh)
+	if err != nil {
+		log.Fatalf("run tui: %v", err)
+	}
 }
 
 type concurrentCache struct {
-	data map[string]cacheEntry
-	mu   sync.Mutex
+	data  map[string]cacheEntry
+	dirty bool
+	mu    sync.Mutex
 }
 
 func loadCache() *concurrentCache {
@@ -180,9 +218,13 @@ func loadCache() *concurrentCache {
 	return &concurrentCache{data: data}
 }
 
+// saveCache writes the cache file only when a fetch since the last write changed it.
 func saveCache(c *concurrentCache) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.dirty {
+		return
+	}
 	out, err := json.MarshalIndent(c.data, "", "  ")
 	if err != nil {
 		return
@@ -190,10 +232,48 @@ func saveCache(c *concurrentCache) {
 	err = os.WriteFile(cachePath, out, 0o644)
 	if err != nil {
 		log.Printf("write cache: %v", err)
+		return
 	}
+	c.dirty = false
 }
 
-func fetchOrCached(ctx context.Context, oauthCfg *oauth2.Config, acct account, rangeStart, rangeEnd time.Time, loc *time.Location, force bool, cache *concurrentCache) ([]eventEntry, error) {
+// loadEvents fetches every account in parallel, saves the cache, and returns the merged events in start order.
+func loadEvents(ctx context.Context, oauthCfg *oauth2.Config, accounts []account, cache *concurrentCache, loc *time.Location, policy authPolicy, force bool) ([]eventEntry, error) {
+	rangeStart, rangeEnd := eventRange(loc)
+
+	results := make([][]eventEntry, len(accounts))
+	errs := make([]error, len(accounts))
+	var wg sync.WaitGroup
+	for i, acct := range accounts {
+		wg.Add(1)
+		go func(i int, acct account) {
+			defer wg.Done()
+			results[i], errs[i] = fetchOrCached(ctx, oauthCfg, acct, rangeStart, rangeEnd, loc, force, policy, cache)
+		}(i, acct)
+	}
+	wg.Wait()
+
+	var all []eventEntry
+	for i, acct := range accounts {
+		if errs[i] != nil {
+			return nil, fmt.Errorf("fetch (%s): %w", acct.Name, errs[i])
+		}
+		all = append(all, results[i]...)
+	}
+
+	saveCache(cache)
+
+	all = dedupeEntries(all)
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Start.Equal(all[j].Start) {
+			return all[i].Summary < all[j].Summary
+		}
+		return all[i].Start.Before(all[j].Start)
+	})
+	return all, nil
+}
+
+func fetchOrCached(ctx context.Context, oauthCfg *oauth2.Config, acct account, rangeStart, rangeEnd time.Time, loc *time.Location, force bool, policy authPolicy, cache *concurrentCache) ([]eventEntry, error) {
 	key := fmt.Sprintf("%s|%s", acct.CalendarID, rangeStart.Format("2006-01-02"))
 	if !force {
 		cache.mu.Lock()
@@ -203,12 +283,13 @@ func fetchOrCached(ctx context.Context, oauthCfg *oauth2.Config, acct account, r
 			return entry.Entries, nil
 		}
 	}
-	entries, err := fetchAccountEvents(ctx, oauthCfg, acct, rangeStart, rangeEnd, loc)
+	entries, err := fetchAccountEvents(ctx, oauthCfg, acct, rangeStart, rangeEnd, loc, policy)
 	if err != nil {
 		return nil, err
 	}
 	cache.mu.Lock()
 	cache.data[key] = cacheEntry{FetchedAt: time.Now(), Entries: entries}
+	cache.dirty = true
 	cache.mu.Unlock()
 	return entries, nil
 }
@@ -264,9 +345,9 @@ func extractLink(item *calendar.Event) string {
 	return ""
 }
 
-func fetchAccountEvents(ctx context.Context, oauthCfg *oauth2.Config, acct account, rangeStart, rangeEnd time.Time, loc *time.Location) ([]eventEntry, error) {
+func fetchAccountEvents(ctx context.Context, oauthCfg *oauth2.Config, acct account, rangeStart, rangeEnd time.Time, loc *time.Location, policy authPolicy) ([]eventEntry, error) {
 	for attempt := 0; attempt < 2; attempt++ {
-		client, err := getClient(ctx, oauthCfg, acct.TokenFile, acct.Name)
+		client, err := getClient(ctx, oauthCfg, acct.TokenFile, acct.Name, policy)
 		if err != nil {
 			return nil, err
 		}
@@ -310,6 +391,9 @@ func fetchAccountEvents(ctx context.Context, oauthCfg *oauth2.Config, acct accou
 
 			if !isInvalidGrantError(err) || attempt == 1 {
 				return nil, err
+			}
+			if policy == authFail {
+				return nil, fmt.Errorf("token for %s was rejected; restart to re-authorize: %w", acct.Name, err)
 			}
 			break
 		}
@@ -361,9 +445,12 @@ func formatTime(t time.Time) string {
 	return fmt.Sprintf("%2d:%02d%s", h, m, ampm)
 }
 
-func getClient(ctx context.Context, config *oauth2.Config, tokenFile, label string) (*http.Client, error) {
+func getClient(ctx context.Context, config *oauth2.Config, tokenFile, label string, policy authPolicy) (*http.Client, error) {
 	tok, err := tokenFromFile(tokenFile)
 	if err != nil {
+		if policy == authFail {
+			return nil, fmt.Errorf("no token for %s; restart to authorize: %w", label, err)
+		}
 		tok, err = getTokenFromWeb(config, label)
 		if err != nil {
 			return nil, err
@@ -373,12 +460,17 @@ func getClient(ctx context.Context, config *oauth2.Config, tokenFile, label stri
 			return nil, err
 		}
 	}
+	// Bound the token refresh call too, so a stalled token endpoint cannot hold a refresh forever
+	timedClient := &http.Client{Timeout: requestTimeout}
+	tokenCtx := context.WithValue(ctx, oauth2.HTTPClient, timedClient)
 	source := &savingTokenSource{
-		source:  config.TokenSource(ctx, tok),
+		source:  config.TokenSource(tokenCtx, tok),
 		path:    tokenFile,
 		current: tok,
 	}
-	return oauth2.NewClient(ctx, source), nil
+	client := oauth2.NewClient(ctx, source)
+	client.Timeout = requestTimeout
+	return client, nil
 }
 
 func getTokenFromWeb(config *oauth2.Config, label string) (*oauth2.Token, error) {
@@ -540,81 +632,243 @@ func openBrowser(url string) error {
 	return cmd.Start()
 }
 
-func printTable(entries []eventEntry, loc *time.Location, tzAbbr string) {
-	now := time.Now().In(loc)
+// clampOffset keeps the first visible display row inside the display rows.
+func (screen *screenModel) clampOffset() {
+	rows := screen.displayRows()
+	screen.offset = max(0, min(screen.offset, len(rows)-screen.visibleRows()))
+}
 
-	nextIdx := -1
-	for i, e := range entries {
-		if e.End.In(loc).After(now) {
-			nextIdx = i
-			break
-		}
-	}
-
-	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
-	style := table.StyleLight
-	style.Color.Header = text.Colors{text.Bold}
-	t.SetStyle(style)
-	_ = strings.ToUpper(tzAbbr)
-	t.AppendHeader(table.Row{"ACCOUNT", "EVENT", "FROM", "TO", "DURATION", "LINK"})
+// displayRows builds the table rows for the events that have not ended and match the filter, with a date row before each new day.
+func (screen screenModel) displayRows() []displayRow {
+	rows := []displayRow{}
 	lastDate := ""
-	for i, e := range entries {
-		// Skip events that have already ended, including their date header
-		ended := e.End.In(loc).Before(now)
-		if e.AllDay {
-			// All-day ends are UTC midnight of the next day, so compare dates
-			ended = e.End.UTC().Format("2006-01-02") <= now.Format("2006-01-02")
-		}
-		if ended {
-			continue
-		}
-
-		tzTime := e.Start.In(loc)
+	nextFound := false
+	for _, e := range screen.filtered() {
+		tzTime := e.Start.In(screen.loc)
 		if e.AllDay {
 			tzTime = e.Start.UTC()
 		}
 		dateKey := tzTime.Format("2006-01-02")
 		if dateKey != lastDate {
-			if lastDate != "" {
-				t.AppendSeparator()
-			}
-			header := text.Colors{text.Bold}.Sprintf("%s %s", dateKey, tzTime.Format("Mon"))
-			t.AppendRow(table.Row{header, "", "", "", "", ""})
-			t.AppendSeparator()
+			date := fmt.Sprintf("%s %s", dateKey, tzTime.Format("Mon"))
+			rows = append(rows, displayRow{cells: []string{date, "", "", "", "", ""}, kind: rowDate})
 		}
 		lastDate = dateKey
 
-		summary, from, to, dur := formatRow(e, loc)
-
-		var wrap func(string) string
-		if i == nextIdx {
-			wrap = func(s string) string { return text.Colors{text.FgHiRed, text.Bold}.Sprint(s) }
-		} else {
-			wrap = func(s string) string { return text.Colors{text.Bold}.Sprint(s) }
+		// Highlight the first event that is still to be shown
+		kind := rowEvent
+		if !nextFound {
+			kind = rowNext
+			nextFound = true
 		}
+
+		summary, from, to, duration := formatRow(e, screen.loc)
 
 		// Show only the "@" and the text after it in the ACCOUNT column
 		label := e.CalendarEmail
-		if at := strings.Index(label, "@"); at >= 0 {
+		at := strings.Index(label, "@")
+		if at >= 0 {
 			label = label[at:]
 		}
 
-		t.AppendRow(table.Row{
-			wrap(label),
-			wrap(summary),
-			wrap(from),
-			wrap(to),
-			wrap(dur),
-			wrap(e.Link),
-		})
+		cells := []string{label, summary, from, to, duration, e.Link}
+		rows = append(rows, displayRow{cells: cells, kind: kind})
 	}
-	t.SetColumnConfigs([]table.ColumnConfig{
-		{Number: 3, Align: text.AlignRight, AlignHeader: text.AlignRight},
-		{Number: 4, Align: text.AlignRight, AlignHeader: text.AlignRight},
-		{Number: 5, Align: text.AlignRight, AlignHeader: text.AlignRight},
+	return rows
+}
+
+// eventEnded reports whether an event has ended by now; an all-day event has ended once its last day is over.
+func eventEnded(e eventEntry, loc *time.Location, now time.Time) bool {
+	if e.AllDay {
+		// All-day ends are UTC midnight of the next day, so compare dates
+		return e.End.UTC().Format("2006-01-02") <= now.In(loc).Format("2006-01-02")
+	}
+	return e.End.In(loc).Before(now)
+}
+
+// filtered returns the events that have not ended and match the typed filter, in table order.
+func (screen screenModel) filtered() []eventEntry {
+	query := screen.filter.Value()
+	matches := []eventEntry{}
+	for _, e := range screen.events {
+		if eventEnded(e, screen.loc, screen.now) {
+			continue
+		}
+		if matchesQuery(e, query) {
+			matches = append(matches, e)
+		}
+	}
+	return matches
+}
+
+// matchesQuery reports whether every term of the query starts a word of the event summary, account, or calendar.
+func matchesQuery(e eventEntry, query string) bool {
+	terms := words(query)
+	candidates := words(fmt.Sprintf("%s %s %s", e.Summary, e.Account, e.CalendarEmail))
+	for _, term := range terms {
+		found := slices.ContainsFunc(candidates, func(candidate string) bool {
+			return strings.HasPrefix(candidate, term)
+		})
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// refreshCommand loads the events in the background, so the screen keeps handling keys while the cache or Google is read.
+func (screen screenModel) refreshCommand() tea.Cmd {
+	refresh := screen.refresh
+	return func() tea.Msg {
+		events, err := refresh()
+		message := refreshMessage{err: err, events: events}
+		return message
+	}
+}
+
+// runTUI shows the events in a full-screen table, refreshed every minute from the cache or Google.
+func runTUI(events []eventEntry, loc *time.Location, refresh func() ([]eventEntry, error)) error {
+	filter := textinput.New()
+	filter.Placeholder = "type to filter: words starting with the event, account, or calendar"
+	filter.Prompt = "> "
+	filter.Focus()
+
+	now := time.Now()
+	screen := screenModel{
+		events:  events,
+		filter:  filter,
+		loc:     loc,
+		now:     now,
+		refresh: refresh,
+		status:  fmt.Sprintf("updated %s", now.In(loc).Format("15:04 MST")),
+	}
+	_, err := tea.NewProgram(screen, tea.WithAltScreen()).Run()
+	return err
+}
+
+func tick() tea.Cmd {
+	return tea.Every(refreshInterval, func(moment time.Time) tea.Msg {
+		return tickMessage(moment)
 	})
-	t.Render()
+}
+
+// words splits a value into lowercase words of letters and digits, so punctuation separates words.
+func words(value string) []string {
+	isSeparator := func(character rune) bool {
+		return !unicode.IsLetter(character) && !unicode.IsDigit(character)
+	}
+	return strings.FieldsFunc(strings.ToLower(value), isSeparator)
+}
+
+func (screen screenModel) Init() tea.Cmd {
+	return tick()
+}
+
+func (screen screenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	switch message := message.(type) {
+	case tea.KeyMsg:
+		switch message.Type {
+		case tea.KeyCtrlC, tea.KeyEsc:
+			return screen, tea.Quit
+		case tea.KeyCtrlN, tea.KeyDown:
+			screen.offset++
+			screen.clampOffset()
+			return screen, nil
+		case tea.KeyCtrlP, tea.KeyUp:
+			screen.offset--
+			screen.clampOffset()
+			return screen, nil
+		}
+	case tea.WindowSizeMsg:
+		screen.height = message.Height
+		screen.clampOffset()
+		return screen, nil
+	case tickMessage:
+		screen.now = time.Time(message)
+		screen.clampOffset()
+		// Skip starting a refresh while the previous one is still running
+		if screen.loading {
+			return screen, tick()
+		}
+		screen.loading = true
+		return screen, tea.Batch(tick(), screen.refreshCommand())
+	case refreshMessage:
+		screen.loading = false
+		if message.err != nil {
+			screen.status = fmt.Sprintf("refresh failed: %v", message.err)
+			return screen, nil
+		}
+		screen.events = message.events
+		screen.status = fmt.Sprintf("updated %s", time.Now().In(screen.loc).Format("15:04 MST"))
+		screen.clampOffset()
+		return screen, nil
+	}
+
+	// Pass every other key to the filter, and return to the first row when the filter changes.
+	previous := screen.filter.Value()
+	filter, command := screen.filter.Update(message)
+	screen.filter = filter
+	if screen.filter.Value() != previous {
+		screen.offset = 0
+	}
+	screen.clampOffset()
+	return screen, command
+}
+
+func (screen screenModel) View() string {
+	builder := strings.Builder{}
+	builder.WriteString(screen.filter.View())
+	builder.WriteString("\n")
+	builder.WriteString(styleDim.Render(screen.status))
+	builder.WriteString("\n\n")
+
+	rows := screen.displayRows()
+	if len(rows) == 0 {
+		message := "no events"
+		if screen.filter.Value() != "" {
+			message = "no event matches"
+		}
+		builder.WriteString(styleDim.Render(message))
+		return builder.String()
+	}
+
+	end := min(len(rows), screen.offset+screen.visibleRows())
+	visible := rows[screen.offset:end]
+	cells := make([][]string, 0, len(visible))
+	for _, row := range visible {
+		cells = append(cells, row.cells)
+	}
+	view := table.New().
+		Border(lipgloss.NormalBorder()).
+		BorderRow(false).
+		BorderStyle(styleDim).
+		Headers(headers...).
+		Rows(cells...).
+		StyleFunc(func(row int, column int) lipgloss.Style {
+			style := styleEvent
+			switch {
+			case row == table.HeaderRow:
+				style = styleHeader
+			case visible[row].kind == rowDate:
+				style = styleDate
+			case visible[row].kind == rowNext:
+				style = styleNext
+			}
+			if column >= columnFrom && column <= columnDuration {
+				style = style.Align(lipgloss.Right)
+			}
+			return style
+		})
+	builder.WriteString(view.Render())
+	return builder.String()
+}
+
+// visibleRows is how many display rows fit under the filter, the status line, and the table frame.
+func (screen screenModel) visibleRows() int {
+	if screen.height <= 0 {
+		return len(screen.displayRows())
+	}
+	return max(1, screen.height-chromeLines)
 }
 
 func randomState() (string, error) {
@@ -667,14 +921,11 @@ func saveToken(path string, token *oauth2.Token) error {
 		return err
 	}
 	err = json.NewEncoder(f).Encode(token)
+	e := f.Close()
 	if err != nil {
-		e := f.Close()
-		if e != nil {
-			log.Printf("token close: %v", e)
-		}
 		return err
 	}
-	return f.Close()
+	return e
 }
 
 func (s *savingTokenSource) Token() (*oauth2.Token, error) {

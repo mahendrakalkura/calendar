@@ -1,6 +1,6 @@
 # calendar
 
-A CLI that prints calendar events across multiple Google accounts in a single merged table. It shows a window around today (3 days back through 8 days ahead), deduplicates events that appear on more than one calendar, and highlights the next upcoming event.
+A TUI that shows calendar events across multiple Google accounts in a single merged table. It shows a window around today (3 days back through 8 days ahead), deduplicates events that appear on more than one calendar, highlights the next upcoming event, and removes events once they have ended. The table refreshes every minute.
 
 ## Setup
 
@@ -53,7 +53,7 @@ Copy `accounts.example.json` to `accounts.json` and list one entry per calendar:
 
 ### 3. Authorize
 
-On first run (or whenever a token is rejected) the CLI starts a local-loopback OAuth flow, opens your browser, and writes the resulting token to that account's `token_file` under `tokens/`. These token files contain refresh tokens and are kept out of git via `.gitignore`.
+On first run (or whenever a token is rejected at startup) the CLI starts a local-loopback OAuth flow, opens your browser, and writes the resulting token to that account's `token_file` under `tokens/`. These token files contain refresh tokens and are kept out of git via `.gitignore`.
 
 ## Caching
 
@@ -69,3 +69,7 @@ make run            # IST (default)
 make run PST        # different timezone abbreviation
 make run IST force  # refetch, bypass cache
 ```
+
+- Type in the filter at the top to search every event. Each typed word must start a word of the event title, the account, or the calendar address, ignoring case and punctuation.
+- Up and Down scroll the table, and Esc quits.
+- A refresh reads the cache and refetches from Google only when the cache is older than 60 minutes. A rejected token during a refresh shows in the status line; restart the program to re-authorize.
