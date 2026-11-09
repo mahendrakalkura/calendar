@@ -27,6 +27,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
+	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/calendar/v3"
@@ -88,6 +89,7 @@ type savingTokenSource struct {
 
 type screenModel struct {
 	events  []eventEntry
+	failure string
 	filter  textinput.Model
 	height  int
 	loading bool
@@ -95,7 +97,7 @@ type screenModel struct {
 	now     time.Time
 	offset  int
 	refresh func() ([]eventEntry, error)
-	status  string
+	width   int
 }
 
 type tickMessage time.Time
@@ -109,11 +111,25 @@ const cachePath = "events.json"
 const cacheTTL = 60 * time.Minute
 
 const (
-	chromeLines     = 7
+	cellPadding     = 1
+	colorAccount    = "14"
+	colorDate       = "13"
+	colorDim        = "8"
+	colorNext       = "9"
+	columnAccount   = 0
 	columnDuration  = 4
+	columnEvent     = 1
 	columnFrom      = 2
+	columnLink      = 5
+	columnTo        = 3
+	ellipsis        = "..."
+	filterLines     = 2
+	minColumnWidth  = 10
 	refreshInterval = time.Minute
+	reservedLines   = 4
 	requestTimeout  = 30 * time.Second
+	tableBorders    = 7
+	tableColumns    = 6
 )
 
 const (
@@ -125,12 +141,13 @@ const (
 var authMu sync.Mutex
 
 var (
-	headers     = []string{"ACCOUNT", "EVENT", "FROM", "TO", "DURATION", "LINK"}
-	styleDate   = lipgloss.NewStyle().Bold(true)
-	styleDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styleEvent  = lipgloss.NewStyle().Bold(true)
-	styleHeader = lipgloss.NewStyle().Bold(true)
-	styleNext   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9"))
+	headers      = []string{"ACCOUNT", "EVENT", "FROM", "TO", "DURATION", "LINK"}
+	styleAccount = styleCell.Foreground(lipgloss.Color(colorAccount))
+	styleCell    = lipgloss.NewStyle().Padding(0, cellPadding)
+	styleDate    = styleCell.Foreground(lipgloss.Color(colorDate)).Bold(true)
+	styleDim     = lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
+	styleHeader  = styleCell.Bold(true)
+	styleNext    = styleCell.Foreground(lipgloss.Color(colorNext)).Bold(true)
 )
 
 var meetingLinkRegex = regexp.MustCompile(`https?://(?:meet\.google\.com|[\w.-]*zoom\.us|teams\.microsoft\.com|teams\.live\.com|[\w.-]*webex\.com|meet\.jit\.si|whereby\.com|[\w.-]*\.gotomeeting\.com|[\w.-]*\.bluejeans\.com)/[^\s<>"')]+`)
@@ -632,10 +649,19 @@ func openBrowser(url string) error {
 	return cmd.Start()
 }
 
-// clampOffset keeps the first visible display row inside the display rows.
+// clampOffset keeps the first visible row no lower than the first row from which every remaining row still fits.
 func (screen *screenModel) clampOffset() {
 	rows := screen.displayRows()
-	screen.offset = max(0, min(screen.offset, len(rows)-screen.visibleRows()))
+	probe := *screen
+	last := 0
+	for start := len(rows) - 1; start >= 0; start-- {
+		probe.offset = start
+		if probe.visibleRows(rows) != len(rows)-start {
+			break
+		}
+		last = start
+	}
+	screen.offset = max(0, min(screen.offset, last))
 }
 
 // displayRows builds the table rows for the events that have not ended and match the filter, with a date row before each new day.
@@ -675,6 +701,41 @@ func (screen screenModel) displayRows() []displayRow {
 		rows = append(rows, displayRow{cells: cells, kind: kind})
 	}
 	return rows
+}
+
+// fitRows truncates the event and link cells with an ellipsis when the table is wider than the terminal, so every row stays one line and the right border stays visible.
+func (screen screenModel) fitRows(rows []displayRow) []displayRow {
+	if screen.width <= 0 {
+		return rows
+	}
+
+	widths := make([]int, tableColumns)
+	for column, header := range headers {
+		widths[column] = lipgloss.Width(header)
+	}
+	for _, row := range rows {
+		for column, cell := range row.cells {
+			widths[column] = max(widths[column], lipgloss.Width(cell))
+		}
+	}
+
+	room := screen.width - tableBorders - tableColumns*2*cellPadding
+	room -= widths[columnAccount] + widths[columnFrom] + widths[columnTo] + widths[columnDuration]
+	if widths[columnEvent]+widths[columnLink] <= room {
+		return rows
+	}
+
+	// Shorten the link first, then the event, and never below the minimum width
+	linkLimit := min(widths[columnLink], max(minColumnWidth, room-widths[columnEvent]))
+	eventLimit := min(widths[columnEvent], max(minColumnWidth, room-linkLimit))
+	fitted := make([]displayRow, 0, len(rows))
+	for _, row := range rows {
+		cells := slices.Clone(row.cells)
+		cells[columnEvent] = ansi.Truncate(cells[columnEvent], eventLimit, ellipsis)
+		cells[columnLink] = ansi.Truncate(cells[columnLink], linkLimit, ellipsis)
+		fitted = append(fitted, displayRow{cells: cells, kind: row.kind})
+	}
+	return fitted
 }
 
 // eventEnded reports whether an event has ended by now; an all-day event has ended once its last day is over.
@@ -733,17 +794,20 @@ func runTUI(events []eventEntry, loc *time.Location, refresh func() ([]eventEntr
 	filter.Prompt = "> "
 	filter.Focus()
 
-	now := time.Now()
 	screen := screenModel{
 		events:  events,
 		filter:  filter,
 		loc:     loc,
-		now:     now,
+		now:     time.Now(),
 		refresh: refresh,
-		status:  fmt.Sprintf("updated %s", now.In(loc).Format("15:04 MST")),
 	}
 	_, err := tea.NewProgram(screen, tea.WithAltScreen()).Run()
 	return err
+}
+
+// isRightAligned reports whether a column holds times or a duration.
+func isRightAligned(column int) bool {
+	return column >= columnFrom && column <= columnDuration
 }
 
 func tick() tea.Cmd {
@@ -781,6 +845,7 @@ func (screen screenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.WindowSizeMsg:
 		screen.height = message.Height
+		screen.width = message.Width
 		screen.clampOffset()
 		return screen, nil
 	case tickMessage:
@@ -795,11 +860,11 @@ func (screen screenModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshMessage:
 		screen.loading = false
 		if message.err != nil {
-			screen.status = fmt.Sprintf("refresh failed: %v", message.err)
+			screen.failure = fmt.Sprintf("refresh failed: %v", message.err)
 			return screen, nil
 		}
 		screen.events = message.events
-		screen.status = fmt.Sprintf("updated %s", time.Now().In(screen.loc).Format("15:04 MST"))
+		screen.failure = ""
 		screen.clampOffset()
 		return screen, nil
 	}
@@ -819,8 +884,8 @@ func (screen screenModel) View() string {
 	builder := strings.Builder{}
 	builder.WriteString(screen.filter.View())
 	builder.WriteString("\n")
-	builder.WriteString(styleDim.Render(screen.status))
-	builder.WriteString("\n\n")
+	builder.WriteString(styleDim.Render(screen.failure))
+	builder.WriteString("\n")
 
 	rows := screen.displayRows()
 	if len(rows) == 0 {
@@ -832,7 +897,20 @@ func (screen screenModel) View() string {
 		return builder.String()
 	}
 
-	end := min(len(rows), screen.offset+screen.visibleRows())
+	// Pad the headers to the widest cell of every row, so the columns keep their width while scrolling.
+	rows = screen.fitRows(rows)
+	padded := slices.Clone(headers)
+	for _, row := range rows {
+		for column, cell := range row.cells {
+			width := max(lipgloss.Width(padded[column]), lipgloss.Width(cell))
+			padded[column] = fmt.Sprintf("%-*s", width, padded[column])
+			if isRightAligned(column) {
+				padded[column] = fmt.Sprintf("%*s", width, strings.TrimSpace(padded[column]))
+			}
+		}
+	}
+
+	end := min(len(rows), screen.offset+screen.visibleRows(rows))
 	visible := rows[screen.offset:end]
 	cells := make([][]string, 0, len(visible))
 	for _, row := range visible {
@@ -842,10 +920,10 @@ func (screen screenModel) View() string {
 		Border(lipgloss.NormalBorder()).
 		BorderRow(false).
 		BorderStyle(styleDim).
-		Headers(headers...).
+		Headers(padded...).
 		Rows(cells...).
 		StyleFunc(func(row int, column int) lipgloss.Style {
-			style := styleEvent
+			style := styleCell
 			switch {
 			case row == table.HeaderRow:
 				style = styleHeader
@@ -853,22 +931,50 @@ func (screen screenModel) View() string {
 				style = styleDate
 			case visible[row].kind == rowNext:
 				style = styleNext
+			case column == columnAccount:
+				style = styleAccount
 			}
-			if column >= columnFrom && column <= columnDuration {
+			if isRightAligned(column) {
 				style = style.Align(lipgloss.Right)
 			}
 			return style
 		})
-	builder.WriteString(view.Render())
+
+	// Draw one dividing line where a new date starts, and none between the events of one date.
+	lines := strings.Split(view.Render(), "\n")
+	divider := lines[2]
+	rendered := []string{lines[0], lines[1], divider}
+	for index, line := range lines[3 : 3+len(visible)] {
+		if index > 0 && visible[index].kind == rowDate {
+			rendered = append(rendered, divider)
+		}
+		rendered = append(rendered, line)
+	}
+	rendered = append(rendered, lines[len(lines)-1])
+	builder.WriteString(strings.Join(rendered, "\n"))
 	return builder.String()
 }
 
-// visibleRows is how many display rows fit under the filter, the status line, and the table frame.
-func (screen screenModel) visibleRows() int {
+// visibleRows is how many rows fit, counting a dividing line for every date that starts inside the window.
+func (screen screenModel) visibleRows(rows []displayRow) int {
 	if screen.height <= 0 {
-		return len(screen.displayRows())
+		return len(rows)
 	}
-	return max(1, screen.height-chromeLines)
+
+	budget := screen.height - filterLines - reservedLines
+	count := 0
+	for index := screen.offset; index < len(rows); index++ {
+		cost := 1
+		if index > screen.offset && rows[index].kind == rowDate {
+			cost++
+		}
+		if cost > budget {
+			break
+		}
+		budget -= cost
+		count++
+	}
+	return max(1, count)
 }
 
 func randomState() (string, error) {
